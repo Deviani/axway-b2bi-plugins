@@ -95,8 +95,10 @@ public class PluggableS3Transport implements PluggableClient {
 	private static final String SETTING_PROXY_PORT = "Proxy Port";
 	private static final String SETTING_PROXY_USER = "Proxy Username";
 	private static final String SETTING_PROXY_PW = "Proxy Password";
-	private static final String DELETE_AFTER_DOWNLOAD = "Delete After Download";
-	private static final String DOWNLOAD_LATEST_FILES_FIRST = "Download Latest Files First";
+	private static final String SETTING_INCLUDE_SUBFOLDERS = "Include Subfolders";
+	private static final String SETTING_DELETE_AFTER_DOWNLOAD = "Delete After Download";
+	private static final String SETTING_DOWNLOAD_ORDER = "Download Order";
+	private static final String SETTING_MAX_FILES = "Max Files";
 
 	// Setting to distinguish pickup and delivery mode
 	private static final String SETTING_EXCHANGE_TYPE = "Exchange Type";
@@ -123,8 +125,10 @@ public class PluggableS3Transport implements PluggableClient {
 	private String _proxyPort;
 	private String _proxyUser;
 	private String _proxyPassword;
+	private boolean _includeSubfolders;
 	private boolean _deleteAfterDownload;
 	private boolean _downloadLatestFirst;
+	private long _maxFiles;
 
     String messageContent = null;
 	Properties env = null;
@@ -147,7 +151,7 @@ public class PluggableS3Transport implements PluggableClient {
 
 		//Set a default logger level
 		if(logger.getLevel() == null) {
-			logger.setLevel(Level.INFO);
+			logger.setLevel(Level.DEBUG);
 		}
 		logger.debug(String.format("Executing PluggableTransport: %s version: %s",_PGMNAME,_PGMVERSION));
 	}
@@ -175,6 +179,14 @@ public class PluggableS3Transport implements PluggableClient {
 			_region = pluggableSettings.getSetting(SETTING_REGION);
 			_bucket = pluggableSettings.getSetting(SETTING_BUCKETNAME);
 			_folder = pluggableSettings.getSetting(SETTING_FOLDERNAME);
+
+			if (_folder.endsWith(SUFFIX)) {
+				_folder = _folder.substring(0, _folder.length() - 1);
+			}
+
+			if(_folder.startsWith(SUFFIX)) {
+				_folder = _folder.substring(1);
+			}
 			
 			if (_exchangeType.equals("pickup")) {
 				_filtertype = pluggableSettings.getSetting(SETTING_PATTERN_TYPE);
@@ -191,8 +203,10 @@ public class PluggableS3Transport implements PluggableClient {
 			_proxyPort = pluggableSettings.getSetting(SETTING_PROXY_PORT);
 			_proxyUser = pluggableSettings.getSetting(SETTING_PROXY_USER);
 			_proxyPassword = pluggableSettings.getSetting(SETTING_PROXY_PW);
-			_deleteAfterDownload = Boolean.valueOf(pluggableSettings.getSetting(DELETE_AFTER_DOWNLOAD));
-			_downloadLatestFirst = Boolean.valueOf(pluggableSettings.getSetting(DOWNLOAD_LATEST_FILES_FIRST));
+			_includeSubfolders = Boolean.valueOf(pluggableSettings.getSetting(SETTING_INCLUDE_SUBFOLDERS));
+			_deleteAfterDownload = Boolean.valueOf(pluggableSettings.getSetting(SETTING_DELETE_AFTER_DOWNLOAD));
+			_downloadLatestFirst = (pluggableSettings.getSetting(SETTING_DOWNLOAD_ORDER).equals("Latest First")) ? true : false;
+			_maxFiles = Long.valueOf(pluggableSettings.getSetting(SETTING_MAX_FILES));
 
 			logger.debug(String.format("Initialization S3 connector Complete"));
 
@@ -202,8 +216,6 @@ public class PluggableS3Transport implements PluggableClient {
 			throw new TransportInitializationException("Error getting settings", e);
 		}
 	}
-
-
 
 
 	/**
@@ -239,7 +251,6 @@ public class PluggableS3Transport implements PluggableClient {
     	    System.err.println("Failed to connect to S3 Server");
 		}
 	}
-
 
 	public void authenticate() throws UnableToAuthenticateException {
 
@@ -375,12 +386,10 @@ public class PluggableS3Transport implements PluggableClient {
 
 	}
 
-
-
 	@Override
 	public String getUrl() throws PluggableException {
 		String _URL;
-		_URL = "Amazon S3 [" + _bucket + "/" + _folder + "]";
+		_URL = "Amazon S3 [" + _bucket + SUFFIX + _folder + "]";
 		return _URL;
 	}
 
@@ -396,18 +405,27 @@ public class PluggableS3Transport implements PluggableClient {
 		ListObjectsRequest listObjectsRequest = new ListObjectsRequest()
 				.withBucketName(_bucket)
 				.withPrefix(_folder);
+
+		if (!_includeSubfolders) {
+			if(_folder == null || _folder.trim().isEmpty())
+				listObjectsRequest
+				.withDelimiter(SUFFIX);
+			else
+				listObjectsRequest
+				.withPrefix(_folder + SUFFIX)
+				.withDelimiter("/");
+		}
 		
 		ArrayList<S3ObjectSummary> S3ObjectSummaries = new ArrayList<S3ObjectSummary>();
 		ObjectListing listing;
-		do {
-			listing = amazonS3.listObjects(listObjectsRequest);		
-			
-			S3ObjectSummaries.addAll(listing.getObjectSummaries());
 
-			if (listing.isTruncated()) {
-				listObjectsRequest.setMarker(listing.getNextMarker());
-			  }
-		} while (listing.isTruncated());
+		listing = amazonS3.listObjects(listObjectsRequest);		
+		S3ObjectSummaries.addAll(listing.getObjectSummaries());
+
+		while(listing.isTruncated()){
+			listing = amazonS3.listNextBatchOfObjects(listing);
+			S3ObjectSummaries.addAll(listing.getObjectSummaries());
+		}
 
 
 		//sort based on modified time
@@ -427,26 +445,32 @@ public class PluggableS3Transport implements PluggableClient {
 			else {
 
 				String splitFolderPath[] = objectSummary.getKey().split("/");
+				
+				String entryName = objectSummary.getKey();
 
+				//overwrite entryName if the name is a Path.
 				if (splitFolderPath.length > 1) {
+					entryName = splitFolderPath[splitFolderPath.length-1];
+				}
 
-					String entryName = splitFolderPath[splitFolderPath.length-1];
-
-					PatternKeyValidator validator = PatternKeyValidatorFactory.createPatternValidator(_filtertype);
+				PatternKeyValidator validator = PatternKeyValidatorFactory.createPatternValidator(_filtertype);
 
 
-					if (validator.isValid(entryName, _filter)) {
-						result.add(entryName);
-						logger.info(entryName + " added to list.");
+				if (validator.isValid(entryName, _filter)) {
+
+					if(!(_folder == null || _folder.trim().isEmpty()) && objectSummary.getKey().startsWith(_folder))
+						entryName = objectSummary.getKey().substring(_folder.length()+1);
+					else
+						entryName = objectSummary.getKey();
+
+					result.add(entryName);
+					logger.info(entryName + " added to list.");
+					if(result.size() == _maxFiles){
+						break;
 					}
-					else {
-						logger.debug(entryName + " does not match the defined filter (" + _filter +") and /or filter type (" + _filtertype + ")");
-					}
-
-				} else {
-
-					//logger.debug("Folder Name: " + objectSummary.getKey());
-
+				}
+				else {
+					logger.debug(entryName + " does not match the defined filter (" + _filter +") and /or filter type (" + _filtertype + ")");
 				}
 			}
 		}
@@ -478,7 +502,6 @@ public class PluggableS3Transport implements PluggableClient {
 
 	}
 
-
 	public String test() throws TransportTestException {
 
 		AmazonS3 testamazonS3 = null;
@@ -492,13 +515,21 @@ public class PluggableS3Transport implements PluggableClient {
 	                .withRegion(_region)
 	                .withCredentials(new AWSStaticCredentialsProvider(testcredentials)).build();
 
+			
+			//get all objects of the bucket using pagination
+			ListObjectsRequest listObjectsRequest = new ListObjectsRequest()
+			.withBucketName(_bucket)
+			.withPrefix(_folder);
+
+			testamazonS3.listObjects(listObjectsRequest);
+
 			testamazonS3.shutdown();
 
 
 		} catch(Exception e) {
 			throw new  TransportTestException("Failed to connect to S3");
 		}
-		return "Success, connected to S3";
+		return "Success, connected to S3. Folder Listing Successful.";
 	}
 
 	public void disconnect() throws UnableToDisconnectException {
