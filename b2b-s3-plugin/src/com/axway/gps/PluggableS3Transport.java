@@ -203,11 +203,12 @@ public class PluggableS3Transport implements PluggableClient {
 			_proxyPort = pluggableSettings.getSetting(SETTING_PROXY_PORT);
 			_proxyUser = pluggableSettings.getSetting(SETTING_PROXY_USER);
 			_proxyPassword = pluggableSettings.getSetting(SETTING_PROXY_PW);
-			_includeSubfolders = Boolean.valueOf(pluggableSettings.getSetting(SETTING_INCLUDE_SUBFOLDERS));
-			_deleteAfterDownload = Boolean.valueOf(pluggableSettings.getSetting(SETTING_DELETE_AFTER_DOWNLOAD));
-			_downloadLatestFirst = (pluggableSettings.getSetting(SETTING_DOWNLOAD_ORDER).equals("Latest First")) ? true : false;
-			_maxFiles = Long.valueOf(pluggableSettings.getSetting(SETTING_MAX_FILES));
-
+			if (_exchangeType.equals("pickup")) {
+				_includeSubfolders = Boolean.valueOf(pluggableSettings.getSetting(SETTING_INCLUDE_SUBFOLDERS));
+				_deleteAfterDownload = Boolean.valueOf(pluggableSettings.getSetting(SETTING_DELETE_AFTER_DOWNLOAD));
+				_downloadLatestFirst = (pluggableSettings.getSetting(SETTING_DOWNLOAD_ORDER).equals("Latest First")) ? true : false;
+				_maxFiles = Long.valueOf(pluggableSettings.getSetting(SETTING_MAX_FILES));
+			}
 			logger.debug(String.format("Initialization S3 connector Complete"));
 
 
